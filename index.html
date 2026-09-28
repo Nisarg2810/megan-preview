@@ -1081,6 +1081,12 @@
     .cv-skip { position: absolute; right: 18px; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 6; font: 700 11px "Cinzel", serif; letter-spacing: .2em; text-transform: uppercase; color: #c99a52; background: rgba(0,0,0,.4); border: 1px solid rgba(201,154,82,.45); border-radius: 999px; padding: 10px 16px; cursor: pointer; }
     .cv-skip:hover { color: #fff4d0; border-color: #f0c46a; }
     body.cover-open { overflow: hidden; }
+    .cv-sound { position: absolute; left: 18px; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 6; font: 700 11px "Cinzel", serif; letter-spacing: .16em; text-transform: uppercase; color: #f0c46a; background: rgba(0,0,0,.45); border: 1px solid rgba(240,196,106,.55); border-radius: 999px; padding: 10px 16px; cursor: pointer; }
+    .cv-sound.off { color: #9a8a70; border-color: rgba(154,138,112,.4); }
+    .cv-hint { position: absolute; left: 50%; bottom: max(22px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 6; font: italic 500 16px "Cormorant Garamond", serif; color: #d8b77a; opacity: .85; animation: cvHint 2s ease-in-out infinite; white-space: nowrap; pointer-events: none; }
+    .cv-hint.gone { display: none; }
+    @keyframes cvHint { 50% { opacity: .35; } }
+    @media (max-width: 560px) { .cv-hint { bottom: 64px; } }
     @media (prefers-reduced-motion: reduce) { .cv-bg::after, .cv-play, .cv-play::before { animation: none; } }
   </style>
 </head>
@@ -1088,11 +1094,8 @@
 <div class="cv-reveal" id="coverReveal" aria-label="Cover reveal">
   <div class="cv-bg"></div>
   <canvas class="cv-fire" aria-hidden="true"></canvas>
-  <div class="cv-gate" id="cvGate">
-    <div class="cv-gate-k">A cover reveal</div>
-    <button type="button" class="cv-play" id="cvPlay"><span>▶</span></button>
-    <div class="cv-gate-s">Sound on 🔊 · 15 seconds</div>
-  </div>
+  <button type="button" class="cv-sound" id="cvSound" aria-pressed="true">🔊 Sound on</button>
+  <div class="cv-hint" id="cvHint">Tap anywhere to hear the score</div>
   <div class="cv-stage" aria-hidden="true">
     <div class="cv-author">Nisarg Mehta presents</div>
     <svg class="cv-sigil" viewBox="0 0 200 260">
@@ -1159,11 +1162,15 @@
   })();
 
   /* ---------- original score: drone, timpani, choir, pulse ---------- */
-  let AC, master, verb;
+  // Sound is on by default. Browsers only allow audio after a first tap or key press, so the score
+  // starts the moment she interacts, joining the reveal at the right point instead of restarting it.
+  window.__soundPref = true;
+  let AC, master, verb, OFF = 0, t0wall = 0, scored = false;
   function audio() {
+    if (AC) return;
     try {
       AC = new (window.AudioContext || window.webkitAudioContext)();
-      master = AC.createGain(); master.gain.value = .9;
+      master = AC.createGain(); master.gain.value = window.__soundPref ? .9 : 0;
       const comp = AC.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4;
       master.connect(comp).connect(AC.destination);
       verb = AC.createConvolver(); const len = AC.sampleRate * 3.2, ir = AC.createBuffer(2, len, AC.sampleRate);
@@ -1171,31 +1178,35 @@
       verb.buffer = ir; const wet = AC.createGain(); wet.gain.value = .55; verb.connect(wet).connect(master);
     } catch (e) { AC = null; }
   }
-  const T = s => AC.currentTime + s;
+  const T = s => AC.currentTime + Math.max(0, s - OFF) + .03;
   function voice(type, f, t0, dur, vol, cut = 1400, send = .6, attack = .02) {
+    if (t0 + dur <= OFF + .1) return;
+    const s0 = Math.max(t0, OFF), d = t0 + dur - s0, at = Math.min(attack, d / 2);
     const o = AC.createOscillator(), fl = AC.createBiquadFilter(), gn = AC.createGain();
     o.type = type; o.frequency.value = f; fl.type = 'lowpass'; fl.frequency.value = cut;
-    gn.gain.setValueAtTime(0.0001, T(t0)); gn.gain.exponentialRampToValueAtTime(vol, T(t0 + attack)); gn.gain.setValueAtTime(vol, T(t0 + Math.max(attack, dur - .6))); gn.gain.exponentialRampToValueAtTime(0.0001, T(t0 + dur));
-    o.connect(fl).connect(gn); gn.connect(master); if (send) { const s = AC.createGain(); s.gain.value = send; gn.connect(s).connect(verb); }
-    o.start(T(t0)); o.stop(T(t0 + dur + .05)); return o;
+    gn.gain.setValueAtTime(0.0001, T(s0)); gn.gain.exponentialRampToValueAtTime(vol, T(s0 + at)); gn.gain.setValueAtTime(vol, T(s0 + Math.max(at, d - .6))); gn.gain.exponentialRampToValueAtTime(0.0001, T(s0 + d));
+    o.connect(fl).connect(gn); gn.connect(master); if (send) { const sn = AC.createGain(); sn.gain.value = send; gn.connect(sn).connect(verb); }
+    o.start(T(s0)); o.stop(T(s0 + d) + .05);
   }
   function noise(t0, dur, vol, type, f, q = .7) {
+    if (t0 < OFF - .05) return { fl: { frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} } }, gn: { gain: { cancelScheduledValues() {}, setValueAtTime() {}, exponentialRampToValueAtTime() {} } } };
     const len = Math.floor(AC.sampleRate * dur), b = AC.createBuffer(1, len, AC.sampleRate), d = b.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-    const s = AC.createBufferSource(), fl = AC.createBiquadFilter(), gn = AC.createGain();
-    s.buffer = b; fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+    const src = AC.createBufferSource(), fl = AC.createBiquadFilter(), gn = AC.createGain();
+    src.buffer = b; fl.type = type; fl.frequency.value = f; fl.Q.value = q;
     gn.gain.setValueAtTime(vol, T(t0)); gn.gain.exponentialRampToValueAtTime(0.0001, T(t0 + dur));
-    s.connect(fl).connect(gn); gn.connect(master); const w = AC.createGain(); w.gain.value = .5; gn.connect(w).connect(verb); s.start(T(t0)); return { fl, gn };
+    src.connect(fl).connect(gn); gn.connect(master); const w = AC.createGain(); w.gain.value = .5; gn.connect(w).connect(verb); src.start(T(t0)); return { fl, gn };
   }
   function boom(t0, big) {
+    if (t0 < OFF - .05) return;
     const o = AC.createOscillator(), gn = AC.createGain();
     o.type = 'sine'; o.frequency.setValueAtTime(big ? 70 : 90, T(t0)); o.frequency.exponentialRampToValueAtTime(28, T(t0 + (big ? 1.8 : 1)));
     gn.gain.setValueAtTime(big ? 1.1 : .8, T(t0)); gn.gain.exponentialRampToValueAtTime(0.0001, T(t0 + (big ? 2.6 : 1.4)));
-    o.connect(gn).connect(master); const s = AC.createGain(); s.gain.value = .4; gn.connect(s).connect(verb); o.start(T(t0)); o.stop(T(t0 + 3));
+    o.connect(gn).connect(master); const sn = AC.createGain(); sn.gain.value = .4; gn.connect(sn).connect(verb); o.start(T(t0)); o.stop(T(t0 + 3));
     noise(t0, big ? 1.4 : .6, big ? .5 : .3, 'lowpass', big ? 260 : 180);
     if (big) noise(t0, 2.4, .12, 'highpass', 3000);
   }
-  function swell(t0, dur) { const n = noise(t0, dur, .001, 'bandpass', 400, 1.2); n.gn.gain.cancelScheduledValues(T(t0)); n.gn.gain.setValueAtTime(.001, T(t0)); n.gn.gain.exponentialRampToValueAtTime(.4, T(t0 + dur - .05)); n.gn.gain.exponentialRampToValueAtTime(.0001, T(t0 + dur)); n.fl.frequency.setValueAtTime(300, T(t0)); n.fl.frequency.exponentialRampToValueAtTime(5000, T(t0 + dur)); }
+  function swell(t0, dur) { if (t0 < OFF - .05) return; const n = noise(t0, dur, .001, 'bandpass', 400, 1.2); n.gn.gain.cancelScheduledValues(T(t0)); n.gn.gain.setValueAtTime(.001, T(t0)); n.gn.gain.exponentialRampToValueAtTime(.4, T(t0 + dur - .05)); n.gn.gain.exponentialRampToValueAtTime(.0001, T(t0 + dur)); n.fl.frequency.setValueAtTime(300, T(t0)); n.fl.frequency.exponentialRampToValueAtTime(5000, T(t0 + dur)); }
   const N = n => 440 * Math.pow(2, (n - 69) / 12);
   function score() {
     if (!AC) return;
@@ -1226,18 +1237,41 @@
     window.__coverPending = false;
     if (window.__startIntro) window.__startIntro(); else window.__startIntroWhenReady = true;
   }
+  const hint = $('#cvHint'), btn = $('#cvSound');
+  function startMusic() {
+    if (scored || done || !window.__soundPref) return;
+    audio(); if (!AC) return;
+    const go = () => {
+      if (scored || done || AC.state !== 'running') return;
+      OFF = (performance.now() - t0wall) / 1000;
+      if (OFF > 13.2) return;
+      scored = true; hint.classList.add('gone'); score();
+    };
+    if (AC.state === 'running') go(); else AC.resume().then(go).catch(() => {});
+  }
+  ['pointerdown', 'keydown', 'touchstart'].forEach(ev => addEventListener(ev, startMusic, { passive: true }));
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    window.__soundPref = !window.__soundPref;
+    btn.textContent = window.__soundPref ? '🔊 Sound on' : '🔇 Sound off';
+    btn.classList.toggle('off', !window.__soundPref); btn.setAttribute('aria-pressed', String(window.__soundPref));
+    hint.classList.toggle('gone', !window.__soundPref || scored);
+    if (AC && master) master.gain.setTargetAtTime(window.__soundPref ? .9 : 0, AC.currentTime, .05);
+    if (window.__soundPref) startMusic();
+  });
   function start() {
-    audio(); score();
-    $('#cvGate').classList.add('hide'); root.classList.add('run');
+    t0wall = performance.now(); root.classList.add('run');
+    startMusic();    // plays straight away when the browser allows it
     for (const [t, c] of steps) timers.push(setTimeout(() => {
       root.classList.add(c);
       if (c === 's-boom') { root.classList.add('lit'); heat = 1; spawn(140, true); const f = $('.cv-flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
       if (c === 's-date') { spawn(90, true); const f = $('.cv-flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
       if (c === 's-draw') heat = .35;
+      if (c === 's-out') hint.classList.add('gone');
     }, t * 1000));
     timers.push(setTimeout(finish, 15000));
   }
-  $('#cvPlay').addEventListener('click', start);
+  setTimeout(start, 400);
   $('#cvSkip').addEventListener('click', finish);
   addEventListener('keydown', e => { if (!done && root.isConnected && e.key === 'Escape') finish(); });
 })();
@@ -1248,7 +1282,7 @@
   <div class="intro" id="intro" aria-label="Intro animation">
     <div id="introStage"></div>
     <div class="intro-ui">
-      <button id="introSound" type="button">♪ TAP FOR SOUND</button>
+      <button id="introSound" type="button" class="on">♪ SOUND ON</button>
       <button id="introSkip" type="button">SKIP ▸</button>
     </div>
   </div>
@@ -1904,7 +1938,7 @@
   /* ---------- sound ---------- */
   let AC = null, muted = false;
   function tone(f, dur, type = 'square', vol = 0.05, when = 0, slide = null) {
-    if (!AC || muted || !f) return;
+    if (!AC || muted || !f || AC.state !== 'running') return;
     const t0 = AC.currentTime + when, o = AC.createOscillator(), gn = AC.createGain();
     o.type = type; o.frequency.setValueAtTime(f, t0);
     if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
@@ -1912,7 +1946,7 @@
     o.connect(gn).connect(AC.destination); o.start(t0); o.stop(t0 + dur + 0.02);
   }
   function noise(dur, vol = 0.08, freq = 1200, type = 'bandpass', when = 0) {
-    if (!AC || muted) return;
+    if (!AC || muted || AC.state !== 'running') return;
     const t0 = AC.currentTime + when, len = Math.floor(AC.sampleRate * dur);
     const buf = AC.createBuffer(1, len, AC.sampleRate), d = buf.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
@@ -1973,6 +2007,7 @@
     startBtn.hidden = true;
   }
   startBtn.addEventListener('click', play);
+  ['pointerdown', 'keydown', 'touchstart'].forEach(ev => addEventListener(ev, () => { if (!muted && window.__soundPref !== false) audioOn(); }, { passive: true }));
   replayBtn.addEventListener('click', play);
   function setMuted(m) {
     muted = m;
@@ -2006,10 +2041,10 @@
     introOpen = true;
     document.body.classList.add('intro-open');
     document.getElementById('introStage').appendChild(gameWrap);
-    setMuted(true);
+    setMuted(window.__soundPref === false); introSound.textContent = muted ? '♪ SOUND OFF' : '♪ SOUND ON'; introSound.classList.toggle('on', !muted); if (!muted) audioOn();
     t = 0; prev = -0.001; playing = true; started = true; startBtn.hidden = true;
-    introSound.addEventListener('click', e => { e.stopPropagation(); soundOn(); });
-    cv.addEventListener('click', () => { if (introOpen) soundOn(); });
+    introSound.addEventListener('click', e => { e.stopPropagation(); if (muted) { window.__soundPref = true; soundOn(); } else { window.__soundPref = false; setMuted(true); introSound.textContent = '♪ SOUND OFF'; introSound.classList.remove('on'); } });
+    cv.addEventListener('click', () => { if (introOpen && !muted) audioOn(); });
     document.getElementById('introSkip').addEventListener('click', closeIntro);
     addEventListener('keydown', e => { if (introOpen && (e.key === 'Escape' || e.key === 'Enter')) closeIntro(); });
   }
@@ -2034,7 +2069,7 @@
   // expose for quick previews: ?t=18 jumps to a moment
   const q = new URLSearchParams(location.search).get('t');
   if (q !== null) { intro.remove(); t = parseFloat(q) || 0; prev = t; started = true; startBtn.hidden = true; }
-  else if (window.__coverPending) { window.__startIntro = () => { openIntro(); soundOn(); }; if (window.__startIntroWhenReady) window.__startIntro(); }
+  else if (window.__coverPending) { window.__startIntro = () => openIntro(); if (window.__startIntroWhenReady) window.__startIntro(); }
   else openIntro();
   window.__seek = v => { t = v; prev = v; playing = false; started = true; startBtn.hidden = true; };
 })();
